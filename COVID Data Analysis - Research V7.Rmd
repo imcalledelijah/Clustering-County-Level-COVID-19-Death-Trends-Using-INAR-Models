@@ -1,0 +1,1329 @@
+---
+title: "COVID Data Analysis - Research"
+author: "Elijah Amirianfar"
+date: "2025-03-04"
+output: pdf_document
+---
+
+```{r}
+# ---------------------------
+# SETUP & LIBRARIES
+# ---------------------------
+
+rm(list = ls())
+
+# Load required packages
+library(tidyverse)    # Core data manipulation and visualization
+library(data.table)   # Fast data loading/manipulation
+library(lubridate)    # Date handling
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# ---------------------------
+# DATA LOADING
+# ---------------------------
+
+# Load raw COVID-19 data by year
+dt_20 <- fread("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/COVID Data/us-counties-2020.csv", header = TRUE)
+dt_21 <- fread("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/COVID Data/us-counties-2021.csv", header = TRUE)
+dt_22 <- fread("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/COVID Data/us-counties-2022.csv", header = TRUE)
+dt_23 <- fread("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/COVID Data/us-counties-2023.csv", header = TRUE)
+
+# Combine multi-year data
+dt <- rbind(dt_20, dt_21, dt_22, dt_23)
+#sum(is.na(dt))
+#is.na(dt)
+# find where NAs show in our dataset
+NA_values = dt %>% filter(if_any(everything(), is.na))
+
+# ---------------------------
+# DATA PREPROCESSING
+# ---------------------------
+
+# Convert dates and extract temporal features
+dt <- dt |> 
+  mutate(
+    date = ymd(date),           # Convert to proper Date format
+    year = year(date),          # Extract calendar year
+    month = month(date),        # Extract month (1-12)
+    day = day(date)             # Extract day of month
+  )
+
+# Define states of interest for analysis
+# here we will filter a dataset by looking at each division of states and grabbing two states at random
+# chatGPT did this for us
+
+# focusing on states in the south
+selected_states <- c(
+  "Arkansas", "Louisiana", "Mississippi", "Alabama", "Georgia", 
+  "Florida", "South Carolina", "North Carolina", "Tennessee", 
+  "Kentucky", "West Virginia", "Virginia", "District of Columbia"
+)
+
+# Filter data to selected states and known counties
+dt_state_selection <- dt |> 
+  dplyr::filter(
+    state %in% selected_states,
+    county != "Unknown"  # Remove ungeocoded cases
+  )
+
+# ---------------------------
+# DAILY DEATHS CALCULATION
+# ---------------------------
+
+# Calculate daily deaths with correction for negative values
+dt_daily <- dt_state_selection |> 
+  # Ensure chronological order within counties
+  dplyr::arrange(state, county, date) |> 
+  
+  # Group by county for temporal calculations
+  group_by(state, county) |> 
+  
+  # Calculate daily deaths as difference from previous day
+  mutate(
+    daily_deaths = deaths - lag(deaths, default = 0)
+  ) |> 
+  ungroup() |> 
+  
+  # Handle data corrections (negative deaths become 0)
+  mutate(
+    daily_deaths = ifelse(daily_deaths < 0, 0, daily_deaths)
+  ) |>
+  
+  mutate(
+    County_State = paste(county,state, sep = ", ")
+  )
+
+# We want to explore number of deaths per number of inhabitants 
+# but first we have to standardize
+# i need to get population of each county per year
+
+county_pop = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/county_pop_2020-2023.csv")
+names(county_pop) = c("County, State", "2020", "2021","2022","2023")
+
+#county_pop_louisiana = county_pop %>%
+#  filter(State == "Louisiana")
+
+#county_pop_ct = county_pop %>%
+#  filter(State == "Connecticut")
+
+median(as.matrix(county_pop[,2:5]))
+mean(as.matrix(county_pop[,2:5]))
+# based on the median we will be finding deaths per 10k inhabitants per county
+
+
+# ---------------------------
+# EXPLORATORY VISUALIZATION
+# ---------------------------
+
+# Plot 2020 daily deaths trajectories by state
+
+dt_daily |> 
+  dplyr::filter(year >= 2020) |> 
+  ggplot(aes(x = date, y = daily_deaths, group = county)) +
+  geom_line(color = "steelblue", linewidth = 0.3) +
+  facet_wrap(.~state) +  # Separate panel for each state
+  labs(
+    title = "Daily COVID-19 Deaths in Selected States (2020-2023)",
+    x = "Date",
+    y = "Daily Deaths"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Improve date readability
+  )
+
+# create 1 matrix of all counties in our 20 states
+# each row represents a county of the state
+# each column represents a day
+# each value represents number of deaths in a day in its county
+
+# Convert date to Date format
+dt_daily$date <- as.Date(dt_daily$date)
+
+library(zoo)
+
+# Create a matrix of daily deaths grouped by county and print the 5 number summary
+dm_county <- with(dt_daily, tapply(daily_deaths, list(County_State, date), sum))
+dm_county[is.na(dm_county)] <- 0
+quant_sum_county <- round(t(apply(dm_county, 1, function(x) quantile(x, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE))))
+colnames(quant_sum_county) <- c("Min", "Q1", "Median", "Q3", "Max")
+# sorts my dataframe by county
+quant_sum_county_sort <- quant_sum_county[order(quant_sum_county[,1]), ]
+# prints above in a nice table
+# kable(quant_sum_county_sort)
+
+# Create a matrix of daily deaths grouped by state and print the 5 number summary
+dm_state <- with(dt_daily, tapply(daily_deaths, list(state, date), sum))
+dm_state[is.na(dm_state)] <- 0
+quant_sum_state <- round(t(apply(dm_state, 1, function(x) quantile(x, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE))))
+colnames(quant_sum_state) <- c("Min", "Q1", "Median", "Q3", "Max")
+# kable(quant_sum_state, caption = "Five-Number Summary of COVID-19 Daily Deaths by State")
+
+# standardize the death matrix
+dm_county_df = as.data.frame(dm_county)
+years = substr(colnames(dm_county_df), 1, 4)
+
+# fix the names in Louisiana Counties to add "Parish" after
+dm_county_df <- dm_county_df %>%
+  mutate(location = rownames(.)) %>%
+  separate(location, into = c("county", "state"), sep = ", ", remove = FALSE)
+dm_county_df <- dm_county_df %>%
+  mutate(county = ifelse(state == "Louisiana", paste0(county, " Parish"), county))
+rownames(dm_county_df) <- paste(dm_county_df$county, dm_county_df$state, sep = ", ")
+dm_county_df <- dm_county_df %>% select(-county, -state, -location)
+
+dm_county_df_2020 = dm_county_df[,years == "2020"]
+dm_county_df_2021 = dm_county_df[,years == "2021"]
+dm_county_df_2022 = dm_county_df[,years == "2022"]
+dm_county_df_2023 = dm_county_df[,years == "2023"]
+
+county_pop$`2020` <- as.numeric(county_pop$`2020`)
+dm_county_df_2020[] <- lapply(dm_county_df_2020, as.numeric)
+
+county_pop$`County, State` <- trimws(county_pop$`County, State`)
+rownames(dm_county_df_2020) = trimws(rownames(dm_county_df_2020))
+
+# divides the 2020 deaths by the 2020 population 
+df_normalized2020 <- dm_county_df_2020 * 10000 / county_pop$`2020`[match(rownames(dm_county_df_2020), county_pop$`County, State`)]
+
+# divides the 2021 deaths by the 2021 population 
+df_normalized2021 <- dm_county_df_2021 * 10000 / county_pop$`2021`[match(rownames(dm_county_df_2021), county_pop$`County, State`)]
+
+# divides the 2022 deaths by the 2022 population 
+df_normalized2022 <- dm_county_df_2022 * 10000 / county_pop$`2022`[match(rownames(dm_county_df_2022), county_pop$`County, State`)]
+
+# divides the 2023 deaths by the 2023 population 
+df_normalized2023 <- dm_county_df_2023 * 10000 / county_pop$`2023`[match(rownames(dm_county_df_2023), county_pop$`County, State`)]
+
+df_normalized = round(cbind(df_normalized2020,
+                      df_normalized2021,
+                      df_normalized2022,
+                      df_normalized2023))
+
+# prints row names of where NAs were found after normalizing the matrix
+wrong_names = rownames(df_normalized)[apply(df_normalized, 1, function(x) any(is.na(x)))]
+```
+
+```{r, message = F, warning = F}
+# Load custom functions for INAR modeling and visualization
+source("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/main-functions.R")  # Core INAR functions
+source("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/plot-functions-elijah.R")  # Visualization functions
+
+# use df_normalized
+
+dm = as.matrix(df_normalized)
+
+#saveRDS(dm, "final-dm.RDS")
+```
+
+```{r, warning = F, eval = F}
+# will tell us what is the best model to use, will take two weeks to run
+auto_model_selection = auto_model_selection_serial(dm, 7, c(1,7), "pois", max_iter = 100)
+
+# saves the above list into a file to call back later
+saveRDS(auto_model_selection, file = "auto_model_selection.rds")
+
+# we saw that the best overall model was when G = 7 and p = c(7,1,1,7,7,7,1) with a BIC of 311261.5
+
+auto_model_selection = readRDS("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/old/auto_model_selection.rds")
+
+We will use G = 4 to do our analysis: INAR(p = c(7,1,7,1))
+
+death_covid_inar_4 = em_inar(dm,
+                              G = 4,
+                              p_vec = c(7,1,7,1),
+                              family_list = c("pois","pois","pois","pois"))
+
+saveRDS(death_covid_inar_4, file = "death_covid_inar_4.RDS")
+```
+
+```{r, warning = F, eval = F}
+# will tell us what is the best model to use
+set.seed(23121986)
+eminar1 = em_inar(dm, G = 4, p = c(7,1,7,1), 
+                               list("pois","pois","nbinom","nbinom"),
+                               max_iter = 100)
+
+set.seed(10122020)
+eminar2 = em_inar(dm, G = 4, p = c(7,1,7,1), 
+                  list("pois","pois","nbinom","nbinom"),
+                  max_iter = 100)
+
+set.seed(23101990)
+eminar3 = em_inar(dm, G = 4, p = c(7,1,7,1), 
+                  list("pois","pois","nbinom","nbinom"),
+                  max_iter = 100)
+
+
+# saves the above list into a file to call back later
+saveRDS(eminar1, file = "eminar1.rds")
+saveRDS(eminar2, file = "eminar2.rds")
+saveRDS(eminar3, file = "eminar3.rds")
+
+#eminar3 was the best!
+```
+
+
+```{r}
+library(tidyverse)    # Core data manipulation and visualization
+library(data.table)   # Fast data loading/manipulation
+library(lubridate)    # Date handling
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+#em1, em2, is bad
+
+eminar = readRDS("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/eminar3.rds")
+
+prob = eminar$resp
+
+final_membership = apply(prob, 1, which.max)
+
+dates = c("2020-03-13", "2022-03-13")
+library(patchwork)
+p1 = plot_inar_acf(dm,max_lag = 21) # tells us to use lag of 7
+p2 = plot_mean_variance(dm,final_membership) # tells us if we have equidispersion or not. since we have equidispersion, we use poisson,
+# REMOVE COLORS
+p3 = plot_inar_ts(dm,dates) # plots all our data at once
+p4 = plot_inar_ts_membership(dm, final_membership, dates)
+p5 = plot_inar_clusters_elijah(dm, final_membership, dates) 
+p6 = plot_inar_clusters(dm, final_membership, dates)
+p7 = plot_inar_ts_and_cluster_averages(dm, final_membership)
+  
+p1
+p2
+p3
+p4
+p5
+p6
+p7
+county_names = rownames(dm)
+cluster_names = matrix(nrow = length(final_membership),ncol = 4)
+
+# goal is to figure out which county falls in each cluster
+
+for(i in 1:length(final_membership)){
+  if(final_membership[i] == 1){
+    cluster_names[i,1] = county_names[i]
+  }
+  else if(final_membership[i] == 2){
+    cluster_names[i,2] = county_names[i]  
+  }
+  else if(final_membership[i] == 3){
+    cluster_names[i,3] = county_names[i]
+  }
+  else{
+    cluster_names[i,4] = county_names[i]
+  }
+}
+
+c1 = unique(na.omit(cluster_names[,1]))
+c2 = unique(na.omit(cluster_names[,2]))
+c3 = unique(na.omit(cluster_names[,3]))
+c4 = unique(na.omit(cluster_names[,4]))
+
+kable(data.frame("Cluster" = c(1,2,3,4),
+                 "Length" = c(length(c1), length(c2), length(c3), length(c4))),
+      caption = "Number of Counties per Cluster")
+
+kable(c1, caption = "Counties in Cluster 1", col.names = NULL)
+kable(c2, caption = "Counties in Cluster 2", col.names = NULL)
+kable(c4, caption = "Counties in Cluster 3", col.names = NULL)
+```
+
+Now we have our clusters of counties. The goal is to see why the counties were clustered the way they were.
+
+The first characteristic we can look at is the political party that each county voted for in the 2016 and 2020 Presidential Elections.
+
+```{r}
+library(tidyverse)    # Core data manipulation and visualization
+library(data.table)   # Fast data loading/manipulation
+library(lubridate)    # Date handling
+library(dplyr)
+library(knitr)
+library(kableExtra)
+political_party = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/countypres_2000-2020.csv") # found here https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VOQCHQ
+
+county_pop = county_pop %>%
+  mutate(`County, State` = str_to_upper(`County, State`))
+
+# below i want to first add the word Parish to all counties in Louisiana
+# then clean up the formatting to make it uniform with my data
+# then in each county, select the party with the most votes
+pol_part = political_party %>%
+  mutate(county_name = if_else(state == "LOUISIANA",
+                          paste0(county_name, " PARISH"),
+                          county_name)) %>%
+  mutate(`County, State` = paste0(county_name, ", ", state)) %>%
+  select(year, `County, State`, party, candidatevotes) %>% 
+  group_by(`County, State`, year) %>%
+  slice_max(order_by = candidatevotes, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# COME BACK TO CHECK ABOUT TOLLAND AND WINDHAM CONNECTICUT BC ONE WAS REPUBLICAN AND ONE WAS DEMOCRAT
+
+pol_part_2020 = pol_part %>%
+  filter(year == 2020)
+
+c1_df = as.data.frame(c1) %>%
+  rename("County, State" = c1) %>%
+  mutate(`County, State` = str_to_upper(`County, State`)) %>%
+  left_join(county_pop, by = "County, State") %>%
+  left_join(pol_part_2020, by = "County, State") %>%
+  rename("Party 2020" = party) %>%
+  select(-year,-candidatevotes)
+
+c2_df = as.data.frame(c2) %>%
+  rename("County, State" = c2) %>%
+  mutate(`County, State` = str_to_upper(`County, State`)) %>%
+  left_join(county_pop, by = "County, State") %>%
+  left_join(pol_part_2020, by = "County, State") %>%
+  rename("Party 2020" = party) %>%
+  select(-year,-candidatevotes)
+
+c4_df = as.data.frame(c4) %>%
+  rename("County, State" = c4) %>%
+  mutate(`County, State` = str_to_upper(`County, State`)) %>%
+  left_join(county_pop, by = "County, State") %>%
+  left_join(pol_part_2020, by = "County, State") %>%
+  rename("Party 2020" = party) %>%
+  select(-year,-candidatevotes)
+
+c1_rep = prop.table(table(c1_df$`Party 2020`))
+c2_rep = prop.table(table(c2_df$`Party 2020`))
+c4_rep = prop.table(table(c4_df$`Party 2020`))
+
+# create a table of proportions of republican vs democrat in each cluster
+
+political_prop = data.frame(
+  "Cluster" = c(1,2,4),
+  "n" = c(length(c1),length(c2),length(c4)),
+  "Democrat" = c(c1_rep[1],c2_rep[1],c4_rep[1]),
+  "Republican" = c(c1_rep[2],c2_rep[2],c4_rep[2])
+)
+political_prop
+```
+
+As we can see above, clusters 3 and 4 are similar in their proportions regarding Democrat and Republican. There is around a 20/80 split of political party in these two clusters. 
+
+```{r}
+# here i want to plot my counties and shade them by cluster
+
+library(ggplot2)
+library(dplyr)
+library(maps)
+
+county_map = map_data("county")
+
+dm1 = dm
+
+rownames(dm1) <- ifelse(grepl("Louisiana", rownames(dm)),gsub(" Parish", "", rownames(dm)),rownames(dm))
+
+us_map_df = data.frame(rownames(dm1), final_membership) %>%
+  separate(col = rownames.dm1., into = c("county", "state"), sep = ",\\s*") %>%
+  mutate(county = tolower(county),
+         state = tolower(state)) 
+
+# checks which counties are NA when they should not be
+#map_na = map_df %>% 
+#  filter(region == "florida",is.na(final_membership))
+#unique(map_na$subregion)
+
+#fixes the NAs in the counties
+us_map_df = us_map_df %>%
+  mutate(county = recode(county,
+    "dekalb"      = "de kalb",
+    "st. clair"     = "st clair",
+    "st. francis"   = "st francis",
+    "laporte"     = "la porte",
+    "st. joseph"    = "st joseph",
+    "desoto"      = "de soto",
+    "suffolk city"     = "suffolk",          
+    "hampton city"     = "hampton",
+    "newport news city" = "newport news",
+    "norfolk city"     = "norfolk",
+    "virginia beach city" = "virginia beach",
+    "lasalle" = "la salle",
+    "st. bernard" = "st bernard",
+    "st. charles" = "st charles",
+    "st. helena" = "st helena",
+    "st. john the baptist" = "st john the baptist",
+    "st. landry" = "st landry",
+    "st. martin" = "st martin",
+    "st. mary" = "st mary",
+    "st. tammany" = "st tammany",
+    "st. james" = "st james",
+    "st. johns" = "st johns",
+    "st. lucie" = "st lucie"
+  ))
+
+# Join map data with your data
+map_df = county_map %>%
+  left_join(us_map_df, by = c("subregion" = "county", "region" = "state"))
+
+# Your target states
+border_states <- selected_states
+
+# Load state map data and filter
+state_df <- map_data("state") %>%
+  filter(region %in% tolower(border_states))
+
+library(viridisLite)
+
+# Step 1: Define cluster colors manually (Viridis style)
+unique_clusters <- na.omit(unique(as.character(map_df$final_membership)))
+cluster_colors_vec <- viridis(length(unique_clusters))
+names(cluster_colors_vec) <- unique_clusters
+cluster_colors <- cluster_colors_vec
+
+# Step 2: Make cluster a character then factor (drops NA as a level)
+map_df$plot_cluster <- as.character(map_df$final_membership)
+
+# Step 3: Plot
+ggplot() +
+  geom_polygon(data = map_df, aes(long, lat, group = group, fill = plot_cluster),
+               color = "white", size = 0.1) +
+  
+  # State borders as thick outline
+  geom_path(data = state_df, aes(long, lat, group = group),
+            color = "black", size = 1.2) +
+  
+  coord_fixed(1.3, xlim = c(-95, -75), ylim = c(25, 42)) +
+  theme_void() +
+  scale_fill_manual(
+    name = "Cluster",
+    values = cluster_colors,
+    na.value = "gray90"
+  ) +
+  guides(fill = guide_legend(na.translate = FALSE)) +
+  labs(title = "County-Level Clustering (Selected State Borders)")
+```
+
+```{r}
+# Step 1: Prepare County Map Data
+county_map <- map_data("county")
+
+# Step 2: Prepare Your Data Frame
+dm1 <- dm
+
+# Clean county names (remove "Parish" from Louisiana names)
+rownames(dm1) <- ifelse(
+  grepl("Louisiana", rownames(dm)),
+  gsub(" Parish", "", rownames(dm)),
+  rownames(dm)
+)
+
+# Create a structured data frame with separate columns for state and county
+us_map_df <- data.frame(region_county = rownames(dm1), cluster = final_membership) %>%
+  separate(col = region_county, into = c("county", "state"), sep = ",\\s*") %>%
+  mutate(
+    county = tolower(county),
+    state = tolower(state)
+  )
+
+# Step 3: Correct mismatched county names
+county_corrections <- c(
+  "dekalb" = "de kalb", "st. clair" = "st clair", "st. francis" = "st francis",
+  "laporte" = "la porte", "st. joseph" = "st joseph", "desoto" = "de soto",
+  "suffolk city" = "suffolk", "hampton city" = "hampton",
+  "newport news city" = "newport news", "norfolk city" = "norfolk",
+  "virginia beach city" = "virginia beach", "lasalle" = "la salle",
+  "st. bernard" = "st bernard", "st. charles" = "st charles",
+  "st. helena" = "st helena", "st. john the baptist" = "st john the baptist",
+  "st. landry" = "st landry", "st. martin" = "st martin",
+  "st. mary" = "st mary", "st. tammany" = "st tammany",
+  "st. james" = "st james", "st. johns" = "st johns",
+  "st. lucie" = "st lucie"
+)
+
+us_map_df <- us_map_df %>%
+  mutate(county = recode(county, !!!county_corrections))
+
+# Recode the clusters explicitly
+us_map_df <- us_map_df %>%
+  mutate(
+    cluster = recode(as.character(cluster),
+                     "1" = "Cluster 1",
+                     "2" = "Cluster 2",
+                     "4" = "Cluster 3")
+  )
+
+# Merge your data with map data
+map_df <- county_map %>%
+  right_join(us_map_df, by = c("subregion" = "county", "region" = "state"))
+
+
+# Define selected states
+selected_states <- c(
+  "Arkansas", "Louisiana", "Mississippi", "Alabama", "Georgia", 
+  "Florida", "South Carolina", "North Carolina", "Tennessee", 
+  "Kentucky", "West Virginia", "Virginia", "District of Columbia"
+)
+
+state_df <- map_data("state") %>%
+  filter(region %in% tolower(selected_states))
+
+# Define Cluster Colors explicitly (Viridis style)
+cluster_levels <- c("Cluster 1", "Cluster 2", "Cluster 3")
+cluster_colors <- setNames(viridis(length(cluster_levels)), cluster_levels)
+
+# Compute centroids for each state
+state_centroids <- state_df %>%
+  group_by(region) %>%
+  summarize(
+    long = mean(range(long)),
+    lat = mean(range(lat))
+  ) %>%
+  ungroup()
+
+# Add state abbreviations using built-in vectors
+state_centroids$abbr <- state.abb[match(toupper(state_centroids$region), toupper(state.name))]
+
+# Add D.C. if needed
+state_centroids$abbr[state_centroids$region == "district of columbia"] <- "DC"
+
+library(shadowtext)
+
+p8 = ggplot() +
+  geom_polygon(
+    data = map_df,
+    aes(x = long, y = lat, group = group, fill = factor(cluster, levels = cluster_levels)),
+    color = "white", size = 0.1
+  ) +
+  geom_path(
+    data = state_df,
+    aes(x = long, y = lat, group = group),
+    color = "black", size = 1.2
+  ) +
+  coord_fixed(1.3, xlim = c(-95, -75), ylim = c(25, 42)) +
+  theme_void(base_family = "Helvetica") +
+  theme(
+    plot.title = element_text(size = 24, face = "bold"),  
+    plot.subtitle = element_text(size = 20),     
+    legend.title = element_text(size = 18),                     
+    legend.text = element_text(size = 16),
+    plot.margin = margin(t = 10, r = 40, b = 10, l = 10)
+  ) +
+  scale_fill_manual(
+    name = "Clusters:",
+    values = cluster_colors
+  ) +
+  guides(fill = guide_legend(na.translate = FALSE)) +
+  labs(
+    title = "County-Level Clustering",
+    subtitle = "US South Region"
+  ) +
+  shadowtext::geom_shadowtext(
+    data = state_centroids,
+    aes(x = long, y = lat, label = abbr),
+    fontface = "bold",
+    size = 6,
+    color = "white",       # Text color
+    bg.color = "black"     # Outline color
+  )
+
+p8
+```
+
+
+The second characteristic we can look at is the median income that each county had in our clusters.
+
+```{r, warning = F}
+library(tidyverse)    # Core data manipulation and visualization
+library(data.table)   # Fast data loading/manipulation
+library(lubridate)    # Date handling
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(tidyr)
+median_income = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/COVID DATA/Unemployment2023.csv") # found here https://www.ers.usda.gov/data-products/county-level-data-sets/county-level-data-sets-download-data
+
+median_inc = median_income %>%
+  filter(Attribute == "Median_Household_Income_2022") %>%
+  select(-Attribute,-FIPS_Code,-State) %>%
+  separate(Area_Name, into = c("County", "State_abbr"), sep = ", ") %>%
+  mutate(State = state.name[match(State_abbr, state.abb)]) %>%
+  filter(!is.na(State)) %>%  # remove any unmatched states
+  select(-State_abbr) %>%
+  mutate(County_State = paste(County, State, sep = ", ")) %>%
+  select(County_State, Value)%>%
+  mutate(County_State = gsub(" County", "", County_State)) %>%
+  rename(County = County_State)
+
+income_df = data.frame(County = rownames(dm), Membership = final_membership)
+
+income_df = income_df %>%
+  left_join(median_inc, by = "County") %>%
+  mutate(Value = if_else(County == "District of Columbia, District of Columbia", 99897, Value)) #manually change DC income to 99897, found from the dataset
+
+income_summary <- income_df %>%
+  group_by(Membership) %>%
+  summarize(
+    n = n(),
+    Min = min(Value, na.rm = TRUE),
+    Q1 = quantile(Value, 0.25, na.rm = TRUE),
+    Median = median(Value, na.rm = TRUE),
+    Mean = mean(Value, na.rm = TRUE),
+    Q3 = quantile(Value, 0.75, na.rm = TRUE),
+    Max = max(Value, na.rm = TRUE)
+  )
+
+```
+
+I also wanted to investigate summary statistics of the number of COVID deaths in each cluster.
+
+```{r}
+dm2 = as.data.frame(dm)
+dm2$Cluster = final_membership
+
+dm2 <- dm2 %>%
+  mutate(Total = rowSums(select(., -Cluster), na.rm = TRUE))
+
+summary_df <- dm2 %>%
+  group_by(Cluster) %>%
+  summarize(
+    n = n(),
+    Min = round(min(Total)),
+    Q1 = round(quantile(Total, 0.25)),
+    Median = round(median(Total)),
+    Mean = round(mean(Total)),
+    Q3 = round(quantile(Total, 0.75)),
+    Max = round(max(Total))
+  )
+```
+
+Here I will investigate summary statistics of population sizes by cluster
+
+```{r}
+summary_county_pop = data.frame(
+  County = rownames(dm),
+  Cluster = final_membership
+)
+
+# Prep both datasets for join
+summary_county_pop_clean <- summary_county_pop %>%
+  mutate(county_key = toupper(County))  # make a join key
+
+county_pop_clean <- county_pop %>%
+  rename(county_key = `County, State`)  # rename column to match
+
+combined_df <- summary_county_pop_clean %>%
+  left_join(county_pop_clean, by = "county_key")
+
+summary_county_pop_final <- combined_df %>%
+  group_by(Cluster) %>%
+  summarize(
+    n = n(),
+    Min = min(`2022`),
+    Q1 = quantile(`2022`, 0.25),
+    Median = median(`2022`),
+    Mean = mean(`2022`),
+    Q3 = quantile(`2022`, 0.75),
+    Max = max(`2022`)
+  )
+```
+
+```{r}
+edu_level = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/HDPulse_data_export.csv")
+
+edu_level = edu_level %>%
+  mutate(County = str_remove(County, regex("\\s*county", ignore_case = TRUE))) %>%
+  mutate(County = str_to_upper(County))
+
+edu_summary_cluster = summary_county_pop %>%
+  mutate(County = str_to_upper(County))
+
+correct_county_education <- c(
+  "ALLEGHANY, VIRGINIA" = "ALLEGHANY AND CLIFTON FORGE CITY, VIRGINIA", 
+  "BEDFORD, VIRGINIA" = "BEDFORD CITY AND, VIRGINIA", 
+  "DISTRICT OF COLUMBIA, DISTRICT OF COLUMBIA" = "DISTRICT OF COLUMBIA",
+  "HALIFAX, VIRGINIA" = "HALIFAX WITH SOUTH BOSTON CITY, VIRGINIA", 
+  "LASALLE PARISH, LOUISIANA" = "LA SALLE PARISH, LOUISIANA"
+)
+
+combined_df_edu <- edu_summary_cluster %>%
+  mutate(County = recode(County, !!!correct_county_education))
+
+combined_df_edu <- combined_df_edu %>%
+  left_join(edu_level, by = "County")
+
+na_combined = combined_df_edu %>%
+  filter(is.na(`Value..Percent.`))
+
+combined_df_edu_final <- combined_df_edu %>%
+  group_by(Cluster) %>%
+  summarize(
+    n = n(),
+    Min = min(`Value..Percent.`),
+    Q1 = quantile(`Value..Percent.`, 0.25),
+    Median = median(`Value..Percent.`),
+    Mean = mean(`Value..Percent.`),
+    Q3 = quantile(`Value..Percent.`, 0.75),
+    Max = max(`Value..Percent.`)
+  )
+
+```
+
+```{r}
+rural_urban = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/Ruralurbancontinuumcodes2023.csv")
+
+rural_urban_new = rural_urban %>%
+  mutate(State = state.name[match(State, state.abb)]) %>%
+  mutate(key_id = paste(County_Name, State, sep = ", ")) %>%
+  mutate(key_id = str_remove(key_id, regex("\\s*COUNTY", ignore_case = TRUE))) %>%
+  mutate(key_id = str_to_upper(key_id)) %>%
+  filter(Attribute == "Description") %>%
+  mutate(Value_New = recode(Value,
+            "Metro - Counties in metro areas of 250,000 to 1 million population" = "Urban",           
+            "Metro - Counties in metro areas of fewer than 250,000 population" = "Urban",               
+            "Nonmetro - Urban population of 5,000 to 20,000, adjacent to a metro area" = "Rural",
+            "Metro - Counties in metro areas of 1 million population or more" = "Urban",   
+            "Nonmetro - Urban population of fewer than 5,000, adjacent to a metro area" = "Rural",
+            "Nonmetro - Urban population of fewer than 5,000, not adjacent to a metro area" = "Rural",
+            "Nonmetro - Urban population of 20,000 or more, adjacent to a metro area" = "Rural",
+            "Nonmetro - Urban population of 5,000 to 20,000, not adjacent to a metro area" = "Rural",
+            "Nonmetro - Urban population of 20,000 or more, not adjacent to a metro area" = "Rural")) %>%
+  select(key_id, Value_New) %>%
+  rename(County = key_id) %>%
+  mutate(County = recode(County,
+                         "DISTRICT OF COLUMBIA, NA" = "DISTRICT OF COLUMBIA, DISTRICT OF COLUMBIA")) %>%
+  left_join(edu_summary_cluster, by = "County") %>%
+  filter(!is.na(`Cluster`))
+
+rural_urban_final <- rural_urban_new %>%
+  group_by(Cluster) %>%
+  summarise(
+    ClusterSize = n(),
+    Prop_Rural = mean(Value_New == "Rural"),
+    Prop_Urban = mean(Value_New == "Urban"),
+    .groups = "drop"
+  )
+
+```
+
+```{r}
+hospital_presence = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/Health_Center_Service_Delivery_and_LookAlike_Sites.csv")
+
+new_hospital_presence = hospital_presence %>%
+  mutate(county_k = paste(Complete.County.Name, State.Name, sep = ", "),
+         full_address = paste(Site.Address, 
+                              Site.City,Site.State.Abbreviation,Site.Postal.Code)) %>%
+  select(Health.Center.Name,full_address, county_k, State.Name)%>%
+  mutate(County = str_to_upper(county_k)) %>%
+  mutate(County = str_remove(County, regex(" County", ignore_case = TRUE)))%>%
+  left_join(edu_summary_cluster, by = "County") %>%
+  filter(!is.na(Cluster))%>%
+  distinct(full_address, .keep_all = TRUE) %>%
+  select(Health.Center.Name,full_address,County,Cluster)
+
+county_pop_2020 = county_pop %>%
+  mutate(County = `County, State`)%>%
+  select(County,`2020`) 
+
+hospital_counts <- new_hospital_presence %>%
+  distinct(County, full_address) %>%  # Use unique address within each county
+  count(County, name = "Num_Hospitals") %>%
+  left_join(county_pop_2020, by = "County")%>%
+  mutate(Hospitals_per_10k = round(Num_Hospitals / (`2020` / 10000),1)) %>%
+  left_join(edu_summary_cluster, by = "County") 
+
+hospital_counts_summary = hospital_counts %>%
+  group_by(Cluster) %>%
+  summarize(
+    Min     = min(Hospitals_per_10k, na.rm = TRUE),
+    Q1      = quantile(Hospitals_per_10k, 0.25, na.rm = TRUE),
+    Median  = median(Hospitals_per_10k, na.rm = TRUE),
+    Mean    = mean(Hospitals_per_10k, na.rm = TRUE),
+    Q3      = quantile(Hospitals_per_10k, 0.75, na.rm = TRUE),
+    Max     = max(Hospitals_per_10k, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+icu_bed_data = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/ICU bed data-FPBfZ.(published in 2020).csv")
+
+icu_clean = icu_bed_data %>%
+  mutate(County = if_else(
+      State == "Louisiana" & !str_detect(County, "Parish$"),
+      paste0(County, " Parish"),
+      County)) %>%
+  mutate(`County, State` = paste(County, State, sep = ", ")) %>%
+  mutate(`County, State` = if_else(
+    `County, State` == "The District, District of Columbia",
+    "DISTRICT OF COLUMBIA, DISTRICT OF COLUMBIA",
+    `County, State`
+  )) %>%
+  mutate(County = str_to_upper(`County, State`))%>%
+  left_join(edu_summary_cluster, by = "County") %>%
+  left_join(county_pop_2020, by = "County") %>%
+  mutate(`Total Population` = `2020`) %>%
+  select(County, ICU.Beds,Population.Aged.60.,`Total Population`, Cluster) %>%
+  filter(!is.na(Cluster)) %>%
+  mutate(ICU_per_10k = round(ICU.Beds / (`Total Population` / 10000),3),
+         Pop_Over_60_per10k = round(Population.Aged.60. / (`Total Population` / 10000),1))
+
+
+icu_beds_summary = icu_clean %>%
+  group_by(Cluster) %>%
+  summarize(
+    Min     = min(ICU_per_10k, na.rm = TRUE),
+    Q1      = quantile(ICU_per_10k, 0.25, na.rm = TRUE),
+    Median  = median(ICU_per_10k, na.rm = TRUE),
+    Mean    = mean(ICU_per_10k, na.rm = TRUE),
+    Q3      = quantile(ICU_per_10k, 0.75, na.rm = TRUE),
+    Max     = max(ICU_per_10k, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+pop_over_60_summary = icu_clean %>%
+  group_by(Cluster) %>%
+  summarize(
+    Min     = min(Pop_Over_60_per10k, na.rm = TRUE),
+    Q1      = quantile(Pop_Over_60_per10k, 0.25, na.rm = TRUE),
+    Median  = median(Pop_Over_60_per10k, na.rm = TRUE),
+    Mean    = mean(Pop_Over_60_per10k, na.rm = TRUE),
+    Q3      = quantile(Pop_Over_60_per10k, 0.75, na.rm = TRUE),
+    Max     = max(Pop_Over_60_per10k, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+counties_more_250k = summary_county_pop_clean %>%
+  mutate(County = county_key)%>%
+  left_join(county_pop_2020, by = "County")%>%
+  select(County, `2020`, Cluster) %>%
+  filter(`2020`>=250000)
+
+counties_more_500k = summary_county_pop_clean %>%
+  mutate(County = county_key)%>%
+  left_join(county_pop_2020, by = "County")%>%
+  select(County, `2020`, Cluster) %>%
+  filter(`2020`>=500000)
+
+counties_250_summary = counties_more_250k %>%
+  group_by(Cluster) %>%
+  summarize(
+    n = n(),
+    Min     = min(`2020`, na.rm = TRUE),
+    Q1      = quantile(`2020`, 0.25, na.rm = TRUE),
+    Median  = median(`2020`, na.rm = TRUE),
+    Mean    = mean(`2020`, na.rm = TRUE),
+    Q3      = quantile(`2020`, 0.75, na.rm = TRUE),
+    Max     = max(`2020`, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+counties_500_summary = counties_more_500k %>%
+  group_by(Cluster) %>%
+  summarize(
+    n = n(),
+    Min     = min(`2020`, na.rm = TRUE),
+    Q1      = quantile(`2020`, 0.25, na.rm = TRUE),
+    Median  = median(`2020`, na.rm = TRUE),
+    Mean    = mean(`2020`, na.rm = TRUE),
+    Q3      = quantile(`2020`, 0.75, na.rm = TRUE),
+    Max     = max(`2020`, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+```
+
+```{r}
+cities = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/uscities.csv")
+
+cities_clean_250k = cities %>%
+  select(city, state_name, county_name, population) %>%
+  mutate(county_name = if_else(state_name == "Louisiana",
+                     paste0(county_name, " Parish"),
+                     county_name))%>% 
+  mutate(County = str_to_upper(paste(county_name, state_name, sep = ", "))) %>%
+  left_join(edu_summary_cluster, by = "County") %>%
+  filter(population >= 250000) %>%
+  filter(!is.na(Cluster))%>%
+  count(Cluster, name = "Num_Cities")
+
+cities_clean_500k = cities %>%
+  select(city, state_name, county_name, population) %>%
+  mutate(county_name = if_else(state_name == "Louisiana",
+                     paste0(county_name, " Parish"),
+                     county_name))%>% 
+  mutate(County = str_to_upper(paste(county_name, state_name, sep = ", "))) %>%
+  left_join(county_pop_2020, by = "County")%>%
+  left_join(edu_summary_cluster, by = "County") %>%
+  filter(population >= 500000) %>%
+  filter(!is.na(Cluster))%>%
+  count(Cluster, name = "Num_Cities")
+
+cities_clean_750k = cities %>%
+  select(city, state_name, county_name, population) %>%
+  mutate(county_name = if_else(state_name == "Louisiana",
+                     paste0(county_name, " Parish"),
+                     county_name))%>% 
+  mutate(County = str_to_upper(paste(county_name, state_name, sep = ", "))) %>%
+  left_join(county_pop_2020, by = "County")%>%
+  left_join(edu_summary_cluster, by = "County") %>%
+  filter(population >= 750000) %>%
+  filter(!is.na(Cluster))%>%
+  count(Cluster, name = "Num_Cities")
+
+cities_clean_1m = cities %>%
+  select(city, state_name, county_name, population) %>%
+  mutate(county_name = if_else(state_name == "Louisiana",
+                     paste0(county_name, " Parish"),
+                     county_name))%>% 
+  mutate(County = str_to_upper(paste(county_name, state_name, sep = ", "))) %>%
+  left_join(county_pop_2020, by = "County")%>%
+  left_join(edu_summary_cluster, by = "County") %>%
+  filter(population >= 1000000) %>%
+  filter(!is.na(Cluster))%>%
+  count(Cluster, name = "Num_Cities")
+
+cities_clean_250k
+cities_clean_500k
+cities_clean_750k
+cities_clean_1m
+```
+
+
+```{r, eval = F}
+cities2 = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/city_pop.csv")
+
+cities = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/uscities.csv")
+
+cities2 = cities2 %>%
+  mutate(City = str_to_upper(paste(City))) %>%
+  mutate(City = str_replace_all(City, regex("\\bcity\\b", ignore_case = TRUE), ""),
+         City = str_replace_all(City, " \\,", ","))
+
+summary_county_pop_new <- summary_county_pop_clean %>%
+  mutate(County = county_key) %>%
+  select(County, Cluster)
+  
+
+city_county = cities %>%
+  select(city, state_name, county_name) %>%
+  mutate(county_name = if_else(state_name == "Louisiana",
+                     paste0(county_name, " Parish"),
+                     county_name),
+         county_name = if_else(state_name == "Virginia" &
+                                 str_to_upper(paste(county_name, state_name, sep = ", ")) %in% va_indep_cities,
+                               paste0(county_name, " CITY"),
+                               county_name))%>%
+  mutate(City = toupper(paste(city, state_name, sep = ", "))) %>%
+  mutate(County = toupper(paste(county_name, state_name, sep = ", "))) %>%
+  filter(state_name %in% selected_states) %>%
+  left_join(summary_county_pop_new, by = "County") %>%
+  select(City, County, Cluster) %>%
+  left_join(cities2, by = "City")
+
+# Vector of Virginia independent cities
+va_indep_cities <- c(
+  "VIRGINIA BEACH, VIRGINIA", "CHESAPEAKE, VIRGINIA", "NORFOLK, VIRGINIA", "NEWPORT NEWS, VIRGINIA",
+  "FREDERICKSBURG, VIRGINIA", "ALEXANDRIA, VIRGINIA", "HAMPTON, VIRGINIA", "LYNCHBURG, VIRGINIA",
+  "CHARLOTTESVILLE, VIRGINIA", "PORTSMOUTH, VIRGINIA", "SUFFOLK, VIRGINIA", "WILLIAMSBURG, VIRGINIA",
+  "WINCHESTER, VIRGINIA", "HARRISONBURG, VIRGINIA", "STAUNTON, VIRGINIA", "DANVILLE, VIRGINIA",
+  "MANASSAS, VIRGINIA", "MARTINSVILLE, VIRGINIA", "PETERSBURG, VIRGINIA", "SALEM, VIRGINIA",
+  "WAYNESBORO, VIRGINIA", "HOPEWELL, VIRGINIA", "RADFORD, VIRGINIA", "MANASSAS PARK, VIRGINIA",
+  "COLONIAL HEIGHTS, VIRGINIA", "BRISTOL, VIRGINIA", "FALLS CHURCH, VIRGINIA", "POQUOSON, VIRGINIA",
+  "NORTON, VIRGINIA", "LEXINGTON, VIRGINIA", "COVINGTON, VIRGINIA", "BUENA VISTA, VIRGINIA",
+  "EMPORIA, VIRGINIA", "GALAX, VIRGINIA", "RICHMOND, VIRGINIA", "FAIRFAX, VIRGINIA", "FRANKLIN, VIRGINIA","ROANOKE VIRGINIA", "JAMES, VIRGINIA"
+)
+
+top_3_cities_2020pop = cities2 %>%
+  mutate(City = str_to_upper(paste(City))) %>%
+  mutate(City = str_replace_all(City, regex("\\bcity\\b", ignore_case = TRUE), ""),
+         City = str_replace_all(City, " \\,", ","))%>%
+  separate(City, into = c("city", "state"), sep = ", ", remove = FALSE)%>%
+  group_by(state) %>%
+  slice_max(order_by = Population.2020, n = 3, with_ties = FALSE) %>%
+  ungroup() %>%
+  filter(state %in% str_to_upper(selected_states))
+```
+
+```{r, eval = F}
+top3_cities = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/top3.csv")
+
+top3 = top3_cities %>%
+  mutate(County = str_remove(County, " County"),
+         County = str_remove(County, " City \\(independent\\)"),
+         County = if_else(State == "Virginia", paste0(County, " City"), County))%>% 
+  mutate(City = toupper(paste(City, State, sep = ", ")),
+         County = toupper(paste(County, State, sep = ", ")))%>%
+  left_join(summary_county_pop_new, by = "County") %>%
+  mutate(Cluster = if_else(str_detect(County, "MIAMI.*FLORIDA"), 1L, Cluster))%>%
+  group_by(State) %>%
+  arrange(desc(Population), .by_group = TRUE) %>%  # sort within each state
+  group_split() %>%
+  walk(~ {
+    cat("\n==============================\n")
+    cat("Top 3 Cities in", unique(.x$State), "\n")
+    print(.x)
+  })
+
+top3
+```
+
+
+```{r, eval = F}
+cities_cluster_250k = cities %>%
+  select(city, state_name, county_name, population) %>%
+  filter(state_name %in% selected_states) %>%
+  mutate(county_name = if_else(state_name == "Louisiana",
+                     paste0(county_name, " Parish"),
+                     county_name))%>% 
+  mutate(County = str_to_upper(paste(county_name, state_name, sep = ", "))) %>%
+  left_join(county_pop_2020, by = "County")%>%
+  left_join(edu_summary_cluster, by = "County") %>%
+  filter(is.na(Cluster))
+```
+
+```{r}
+mask_mandate = read.csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/mask_mandate.csv")
+```
+
+```{r}
+cov_vax = read_csv("/Users/elijahamirianfar/My Drive (elijahl2l3l4@gmail.com)/04. CSU FULLERTON 2023-2025/RESEARCH/CODE/COVID CODE/cov_vax.csv")
+
+cov_vax_clean = cov_vax %>%
+  filter(Recip_State %in% c("AR", "LA", "MS", "AL", "GA", "FL", 
+                            "SC", "NC", "TN", "KY", "WV", "VA", "DC"))
+```
+
+SPIDER PLOT
+
+```{r}
+# Load package
+library(fmsb)
+
+# Your data
+spider_plot <- data.frame(
+  row.names = c("Cluster 1 Median", "Cluster 2 Median", "Cluster 3 Median"),
+  COVID_19_Deaths_per10k = c(36, 29, 75),                  # Distinguishing outcome
+  Education = c(17.3, 19, 14.4),                           # Socioeconomic
+  Income = c(53388, 53656.5, 47195),                       # Socioeconomic
+  Pop_Over_60_per10k = c(2437.5, 2392.2, 2751.8),          # Demographics
+  Rural_Prop = c(0.544, 0.549, 0.857),                     # Rurality
+  Republican_Prop = c(0.915, 0.794, 0.857),                # Politics
+  Hospitals_per_Cluster_per10k = c(0.7, 0.8, 4.05),        # Healthcare Access
+  ICU_Beds_per10k = c(1.067, 0, 0),                        # Healthcare Infrastructure
+  Pop_by_Cluster = c(28471, 26922.5, 2792)                 # Population size
+)
+
+# Add max and min rows
+spider_plot_scaled <- rbind(
+  Max = apply(spider_plot, 2, max),
+  Min = apply(spider_plot, 2, min),
+  spider_plot
+)
+
+# Plot
+radarchart(spider_plot_scaled,
+           axistype = 1,
+           pcol = c("blue", "red", "green"),
+           pfcol = c(rgb(0,0,1,0.3), rgb(1,0,0,0.3), rgb(0,1,0,0.3)),
+           plwd = 2,
+           cglcol = "grey",
+           cglty = 1,
+           axislabcol = "black",
+           vlcex = 0.8)
+
+legend("topright", legend = rownames(spider_plot),
+       bty = "n", pch = 20, col = c("blue", "red", "green"),
+       text.col = "black", cex = 1.0)
+```
+
+
+\newpage
+
+```{r, echo = F}
+kable(income_summary, caption = "Summary Statistics of Income by Cluster")
+
+kable(summary_df, caption = "Summary Statistics of COVID Deaths (Normalized) by Cluster")
+
+kable(summary_county_pop_final, caption = "Summary Statistics of County Populations by Cluster")
+
+kable(combined_df_edu_final, caption = "Summary Statistics of People with Bachelor's Degree or higher by Cluster")
+
+kable(rural_urban_final, caption = "Proportions of Rural vs. Urban Counties by Cluster")
+
+kable(hospital_counts_summary, caption = "Number of Hospitals per County per 10k Inhabitants by Cluster")
+
+kable(icu_beds_summary, caption = "Number of ICU Beds per County per 10K Inhabitants by Cluster")
+
+kable(pop_over_60_summary, caption = "Population over 60 Years Old Per 10k Inhabitants by Cluster")
+
+kable(counties_250_summary, caption = "Counties with over 250k Inhabitants by Cluster")
+
+kable(counties_500_summary, caption = "Counties with over 500k Inhabitants by Cluster")
+```
+
+## Common themes between each cluster
+
+- High proportion of Republican counties (79 to 91% of each cluster voted Republican)
+- High poverty and low median/average incomes
+- Rural areas with moderate and persistent COVID death rates
+  - Median population of around 27000 people
+- Due to the location of these counties, they had limited access to hospitals and other healthcare resources to combat COVID-19
+
+## What Cluster 1 Counties Have in Common
+
+- Had the highest amount of Republican counties (91% was Republican)
+- High poverty and low median income ($53,000)
+- Had the widest range of populations (5000 to 2.6 million people)
+
+## What Cluster 2 Counties Have in Common
+
+- Had the widest range of household incomes (\$28,972 to \$167,605)
+- Had the highest amount of COVID deaths in a day (156 in a day)
+
+## What Cluster 4 Counties Have in Common
+
+- Small, rural populations
+  - No more than 4000 people in each county
+- Highest poverty and lowest median income
+  - Lowest median income out of the three clusters ($47,195.00)
+  - Lowest mean income out of the three clusters ($45,770.71)
+- Geographic isolation
+  - Far from metro areas which leads to limited healthcare access
+- Flat or late COVID death patterns
+  - Had the highest median amount of daily deaths (out of the three clusters (75 in a day)
+  - Highest average amount of daily deaths (66 in a day)
+  
+Add Methodology, 
+
+
+```{r}
+# Extract state names
+states <- sub(".*,\\s*", "", c1)
+
+# Count occurrences and compute proportions
+state_counts <- table(states)
+state_proportions <- prop.table(state_counts)
+
+# Sort by proportion (optional)
+state_proportions <- sort(state_proportions, decreasing = TRUE)
+
+# View results
+state_proportions
+```
+
+```{r}
+# Load package
+library(fmsb)
+
+# Your data
+spider_plot <- data.frame(
+  row.names = c("Cluster 1 Median", "Cluster 2 Median", "Cluster 3 Median"),
+  COVID_19_Deaths_per10k = c(36, 29, 75),                  # Distinguishing outcome
+  Education = c(17.3, 19, 14.4),                           # Socioeconomic
+  Income = c(53388, 53656.5, 47195),                       # Socioeconomic
+  Pop_Over_60_per10k = c(2437.5, 2392.2, 2751.8),          # Demographics
+  Rural_Prop = c(0.544, 0.549, 0.857),                     # Rurality
+  Republican_Prop = c(0.915, 0.794, 0.857),                # Politics
+  Hospitals_per_Cluster_per10k = c(0.7, 0.8, 4.05),        # Healthcare Access
+  ICU_Beds_per10k = c(1.067, 0, 0),                        # Healthcare Infrastructure
+  Pop_by_Cluster = c(28471, 26922.5, 2792)                 # Population size
+)
+
+# Add max and min rows
+spider_plot_scaled <- rbind(
+  Max = apply(spider_plot, 2, max),
+  Min = apply(spider_plot, 2, min),
+  spider_plot
+)
+
+# 1. prettier axis labels
+var_labels <- c(
+  "\n Deaths/10k",
+  "Edu. (yrs)",
+  "\nIncome (USD)        ",     # <- push this one out
+  "Pop 60+/10k",
+  "Rural Prop.",
+  "Prop. of Republican",
+  "Hospitals/10k",
+  "\n         ICU Beds/10k",     # <- and this one
+  "Pop. Size"
+)
+
+# 2. rebuild your spider_plot_scaled but with new row-names for clusters
+rownames(spider_plot_scaled) <- c(
+  "Max", "Min",
+  "Weekly-persistent\n Urban Impact\n",
+  "Daily-stable\n Affluent Safe\n",
+  "Daily-volatile\n Rural Vulnerable\n"
+)
+
+# 2) set generous margins: 
+#    mar = c(bottom, left, top, right)
+#    oma = c(bottom-outer, left-outer, top-outer, right-outer)
+old_par <- par(
+  mar = c(3, 1, 1, 1),    # give extra bottom & top room
+  oma = c(0, 0, 0, 0),    # outer margins for legend/title if needed
+  cex.main  = 24/12,      # 24 pt title
+  cex.sub   = 20/12,      # 20 pt subtitle
+  cex.lab   = 20/12,      # 20 pt axis labels
+  cex.axis  = 16/12       # 16 pt axis numbers/text
+)
+
+# 3) draw your spider chart
+radarchart(
+  spider_plot_scaled,
+  axistype    = 1,
+  vlabels     = var_labels,
+  vlcex       = 16/12,
+  pcol        = c("#3b0f70", "#1a9850", "#f6c55f"),
+  pfcol       = c(
+    adjustcolor("#3b0f70", alpha.f = 0.3),
+    adjustcolor("#1a9850", alpha.f = 0.3),
+    adjustcolor("#f6c55f", alpha.f = 0.3)
+  ),
+  plwd        = 2,
+  cglcol      = "grey",
+  cglty       = 1,
+  axislabcol  = "black"
+)
+
+# 4) add title & subtitle, they’ll now fit
+title(
+  main = "Cluster Characteristics",
+  line = -0.5,  # move title down a bit
+)
+
+# 5) draw your legend in the bottom outer margin
+par(xpd = NA)  # allow drawing into outer margin
+legend(
+  x         = "bottom",
+  inset     = c(0, -0.1),  # push down into that extra bottom space
+  legend    = rownames(spider_plot_scaled)[3:5],
+  title.cex = 18/12,
+  cex       = 16/12,
+  pch       = 20,
+  pt.cex    = 2,
+  col       = c("#3b0f70", "#1a9850", "#f6c55f"),
+  bty       = "n",
+  horiz     = TRUE
+)
+
+# 6) restore graphics state and close
+par(old_par)
+dev.off()
+```
+
+
+SOURCES:
+
+COVID Death Data: https://github.com/nytimes/covid-19-data/tree/master
+
+County Population: https://www.census.gov/data/datasets/time-series/demo/popest/2020s-counties-detail.html
+
+Political Party: https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VOQCHQ
+
+Median Income: https://www.ers.usda.gov/data-products/county-level-data-sets/county-level-data-sets-download-data
+
+Education Levels: https://hdpulse.nimhd.nih.gov/data-portal/home
+
